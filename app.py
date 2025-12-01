@@ -12,9 +12,12 @@ from tkinter import filedialog
 app = Flask(__name__, static_folder='.')
 CORS(app)
 
-# Create downloads directory
-DOWNLOAD_DIR = Path('downloads')
-DOWNLOAD_DIR.mkdir(exist_ok=True)
+# Default download directory
+# Default download directory (removed default fallback)
+# DOWNLOAD_DIR = Path.home() / "Downloads"
+# DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
 
 # Global dictionary to store download progress
 download_progress = {}
@@ -139,8 +142,22 @@ def get_video_info():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
         
-        ydl_opts = get_ydl_opts({'extract_flat': False})
+        # First check with extract_flat=True to quickly detect playlists
+        ydl_opts = get_ydl_opts({'extract_flat': True})
         
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            # Check if it's a playlist
+            if 'entries' in info:
+                return jsonify({
+                    'title': info.get('title', 'Unknown Playlist'),
+                    'is_playlist': True,
+                    'video_count': len(info.get('entries', []))
+                })
+        
+        # If it's a single video, we need full details for formats
+        ydl_opts = get_ydl_opts({'extract_flat': False})
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
@@ -191,7 +208,7 @@ def get_video_info():
                 'view_count': info.get('view_count', 0),
                 'video_formats': video_formats,
                 'audio_formats': audio_formats,
-                'is_playlist': 'entries' in info
+                'is_playlist': False
             })
             
     except Exception as e:
@@ -219,9 +236,8 @@ def download_video():
         # Allow user to select download folder
         download_path = select_download_folder()
         
-        # If user cancels selection, default to downloads folder
         if not download_path:
-            download_path = DOWNLOAD_DIR
+            return jsonify({'error': 'Download cancelled: No folder selected'}), 400
             
         save_dir = Path(download_path)
         
@@ -351,9 +367,8 @@ def download_playlist():
         # Select download folder
         download_path = select_download_folder()
         
-        # If user cancels selection, default to system Downloads folder
         if not download_path:
-            download_path = Path.home() / "Downloads"
+            return jsonify({'error': 'Download cancelled: No folder selected'}), 400
             
         save_dir = Path(download_path)
         
@@ -406,17 +421,21 @@ def download_playlist():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/download-file/<path:filename>')
-def download_file(filename):
-    """Serve downloaded file"""
+@app.route('/api/download-file')
+def download_file():
+    """Serve downloaded file from absolute path"""
     try:
-        return send_file(DOWNLOAD_DIR / filename, as_attachment=True)
+        filepath = request.args.get('filepath')
+        if not filepath:
+            return jsonify({'error': 'Filepath is required'}), 400
+            
+        return send_file(filepath, as_attachment=True)
     except Exception as e:
         return jsonify({'error': str(e)}), 404
 
 if __name__ == '__main__':
     print("🚀 SaveTube Server Starting...")
-    print("📁 Downloads will be saved to:", DOWNLOAD_DIR.absolute())
+    # print("📁 Downloads will be saved to:", DOWNLOAD_DIR.absolute())
     print("🌐 Server running at: http://localhost:5000")
     print("\n⚠️  Make sure FFmpeg is installed for format conversion!")
     app.run(debug=True, port=5000, host='0.0.0.0')

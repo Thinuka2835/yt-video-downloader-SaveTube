@@ -175,6 +175,7 @@ async function fetchVideoInfo() {
         // Check if it's a playlist
         if (data.is_playlist) {
             await fetchPlaylistInfo(url);
+            // Don't display video info for playlist initially as it might be incomplete
         } else {
             displayVideoInfo(data);
             playlistSection.classList.add('hidden');
@@ -307,7 +308,8 @@ async function downloadMedia(type) {
         );
 
         // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
-        const downloadFileUrl = `${API_BASE}/api/download-file/${encodeURIComponent(data.filename)}`;
+        // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
+        const downloadFileUrl = `${API_BASE}/api/download-file?filepath=${encodeURIComponent(data.path)}`;
 
         // Use a hidden anchor tag to trigger the file download in the browser
         const a = document.createElement('a');
