@@ -41,6 +41,35 @@ const notificationClose = document.getElementById('notification-close');
 let currentVideoInfo = null;
 let currentPlaylistInfo = null;
 
+// Statistics (reset on page refresh)
+let successCount = 0;
+let failCount = 0;
+
+function updateStatsUI() {
+    document.getElementById('success-count').textContent = successCount;
+    document.getElementById('fail-count').textContent = failCount;
+}
+
+function incrementSuccess() {
+    successCount++;
+    updateStatsUI();
+}
+
+function incrementSuccessByCount(count) {
+    successCount += count;
+    updateStatsUI();
+}
+
+function incrementFail() {
+    failCount++;
+    updateStatsUI();
+}
+
+function incrementFailByCount(count) {
+    failCount += count;
+    updateStatsUI();
+}
+
 // Utility Functions
 function formatDuration(seconds) {
     if (!seconds) return '0:00';
@@ -94,10 +123,33 @@ function showProgress(title, status) {
 
 function updateProgress(percent) {
     progressFill.style.width = `${percent}%`;
+    if (percent >= 100) {
+        progressStatus.textContent = 'Download complete!';
+    }
 }
 
 function hideProgress() {
     progressSection.classList.add('hidden');
+}
+
+// Desktop Notifications
+function requestNotificationPermission() {
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+}
+
+function showDesktopNotification(title, body) {
+    if ('Notification' in window && Notification.permission === 'granted') {
+        const notification = new Notification(title, {
+            body: body,
+            icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="%23FF6B6B"/><path d="M70 50L40 67.5V32.5L70 50Z" fill="white"/></svg>',
+            badge: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="%23FF6B6B"/><path d="M70 50L40 67.5V32.5L70 50Z" fill="white"/></svg>'
+        });
+
+        // Auto-close after 5 seconds
+        setTimeout(() => notification.close(), 5000);
+    }
 }
 
 // Event Listeners
@@ -278,56 +330,66 @@ async function downloadMedia(type) {
             updateProgress(progress);
         }, 500);
 
-        const response = await fetch(`${API_BASE}/api/download`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                url,
-                type,
-                format,
-                quality,
-            }),
-        });
+        try {
+            const response = await fetch(`${API_BASE}/api/download`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    url,
+                    type,
+                    format,
+                    quality,
+                }),
+            });
 
-        clearInterval(progressInterval);
+            const data = await response.json();
 
-        const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'Download failed');
+            }
 
-        if (!response.ok) {
-            throw new Error(data.error || 'Download failed');
+            updateProgress(100);
+
+            showNotification(
+                `${type === 'video' ? 'Video' : 'Audio'} downloaded successfully! Starting file download...`,
+                'success'
+            );
+
+            // Show desktop notification
+            showDesktopNotification(
+                'SaveTube - Download Complete',
+                `${data.title} has been downloaded successfully!`
+            );
+
+            incrementSuccess();
+
+            // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
+            // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
+            const downloadFileUrl = `${API_BASE}/api/download-file?filepath=${encodeURIComponent(data.path)}`;
+
+            // Use a hidden anchor tag to trigger the file download in the browser
+            const a = document.createElement('a');
+            a.href = downloadFileUrl;
+            a.download = data.filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            // === END: CRITICAL FIX ===
+
+            setTimeout(() => {
+                hideProgress();
+            }, 2000);
+        } finally {
+            clearInterval(progressInterval);
         }
-
-        updateProgress(100);
-        progressStatus.textContent = 'Download complete!';
-
-        showNotification(
-            `${type === 'video' ? 'Video' : 'Audio'} downloaded successfully! Starting file download...`,
-            'success'
-        );
-
-        // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
-        // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
-        const downloadFileUrl = `${API_BASE}/api/download-file?filepath=${encodeURIComponent(data.path)}`;
-
-        // Use a hidden anchor tag to trigger the file download in the browser
-        const a = document.createElement('a');
-        a.href = downloadFileUrl;
-        a.download = data.filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        // === END: CRITICAL FIX ===
-
-        setTimeout(() => {
-            hideProgress();
-        }, 2000);
 
     } catch (error) {
         console.error('Error:', error);
         showNotification(error.message, 'error');
         hideProgress();
+        incrementFail();
     } finally {
         setButtonLoading(button, false);
     }
@@ -395,6 +457,20 @@ async function downloadPlaylist() {
             'success'
         );
 
+        // Show desktop notification
+        showDesktopNotification(
+            'SaveTube - Playlist Download Complete',
+            `Successfully downloaded ${data.video_count} videos from "${data.playlist_title}"!`
+        );
+
+        // Update statistics based on individual video results
+        if (data.successful_count > 0) {
+            incrementSuccessByCount(data.successful_count);
+        }
+        if (data.failed_count > 0) {
+            incrementFailByCount(data.failed_count);
+        }
+
         setTimeout(() => {
             hideProgress();
         }, 3000);
@@ -403,6 +479,7 @@ async function downloadPlaylist() {
         console.error('Error:', error);
         showNotification(error.message, 'error');
         hideProgress();
+        incrementFail();
     } finally {
         setButtonLoading(downloadPlaylistBtn, false);
     }
@@ -411,3 +488,9 @@ async function downloadPlaylist() {
 // Initialize
 console.log('SaveTube initialized');
 console.log('API Base:', API_BASE);
+
+// Initialize stats
+updateStatsUI();
+
+// Request notification permission
+requestNotificationPermission();

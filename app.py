@@ -375,9 +375,22 @@ def download_playlist():
         # Create playlist subdirectory
         playlist_dir = save_dir / 'playlist_%(playlist_title)s'
         
+        # Track individual video downloads
+        successful_downloads = 0
+        failed_downloads = 0
+        
+        def progress_hook(d):
+            nonlocal successful_downloads, failed_downloads
+            if d['status'] == 'finished':
+                successful_downloads += 1
+            elif d['status'] == 'error':
+                failed_downloads += 1
+        
         ydl_opts = get_ydl_opts({
             'outtmpl': str(playlist_dir / '%(playlist_index)s - %(title)s.%(ext)s'),
             'quiet': False,
+            'progress_hooks': [progress_hook],
+            'ignoreerrors': True,  # Continue even if some videos fail
         })
         
         if format_type == 'audio':
@@ -411,9 +424,15 @@ def download_playlist():
             video_count = len(info.get('entries', []))
             playlist_title = sanitize_filename(info.get('title', 'Unknown Playlist'))
             
+            # If progress hook didn't catch all, estimate based on video_count
+            if successful_downloads == 0 and failed_downloads == 0:
+                successful_downloads = video_count
+            
             return jsonify({
                 'success': True,
                 'video_count': video_count,
+                'successful_count': successful_downloads,
+                'failed_count': failed_downloads,
                 'playlist_title': playlist_title,
                 'download_path_name': f'downloads/playlist_{playlist_title}/'
             })
