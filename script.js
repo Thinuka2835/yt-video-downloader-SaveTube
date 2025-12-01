@@ -9,17 +9,21 @@ const downloadSection = document.getElementById('download-section');
 const playlistSection = document.getElementById('playlist-section');
 const progressSection = document.getElementById('progress-section');
 
+// Video Info Elements
 const videoThumbnail = document.getElementById('video-thumbnail');
 const videoTitle = document.getElementById('video-title');
 const videoUploader = document.getElementById('video-uploader');
 const videoViews = document.getElementById('video-views');
 const durationBadge = document.getElementById('duration-badge');
 
+// Download Control Elements
 const videoFormatSelect = document.getElementById('video-format');
-const audioFormatSelect = document.getElementById('audio-format');
+const videoQualitySelect = document.getElementById('video-quality');
 const downloadVideoBtn = document.getElementById('download-video-btn');
+const audioFormatSelect = document.getElementById('audio-format');
 const downloadAudioBtn = document.getElementById('download-audio-btn');
 
+// Playlist Elements
 const playlistInfo = document.getElementById('playlist-info');
 const playlistFormatType = document.getElementById('playlist-format-type');
 const playlistFormat = document.getElementById('playlist-format');
@@ -255,6 +259,7 @@ async function downloadMedia(type) {
     }
 
     const format = type === 'video' ? videoFormatSelect.value : audioFormatSelect.value;
+    const quality = type === 'video' ? videoQualitySelect.value : 'best';
     const button = type === 'video' ? downloadVideoBtn : downloadAudioBtn;
 
     setButtonLoading(button, true);
@@ -264,7 +269,7 @@ async function downloadMedia(type) {
     );
 
     try {
-        // Simulate progress
+        // Simulate progress (for better user experience)
         let progress = 0;
         const progressInterval = setInterval(() => {
             progress += Math.random() * 15;
@@ -281,6 +286,7 @@ async function downloadMedia(type) {
                 url,
                 type,
                 format,
+                quality,
             }),
         });
 
@@ -296,9 +302,21 @@ async function downloadMedia(type) {
         progressStatus.textContent = 'Download complete!';
 
         showNotification(
-            `${type === 'video' ? 'Video' : 'Audio'} downloaded successfully! Check your downloads folder.`,
+            `${type === 'video' ? 'Video' : 'Audio'} downloaded successfully! Starting file download...`,
             'success'
         );
+
+        // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
+        const downloadFileUrl = `${API_BASE}/api/download-file/${encodeURIComponent(data.filename)}`;
+
+        // Use a hidden anchor tag to trigger the file download in the browser
+        const a = document.createElement('a');
+        a.href = downloadFileUrl;
+        a.download = data.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // === END: CRITICAL FIX ===
 
         setTimeout(() => {
             hideProgress();
@@ -328,6 +346,7 @@ async function downloadPlaylist() {
 
     const type = playlistFormatType.value;
     const format = playlistFormat.value;
+    const quality = document.getElementById('playlist-quality').value;
 
     setButtonLoading(downloadPlaylistBtn, true);
     showProgress(
@@ -354,6 +373,7 @@ async function downloadPlaylist() {
                 url,
                 type,
                 format,
+                quality
             }),
         });
 
@@ -369,7 +389,7 @@ async function downloadPlaylist() {
         progressStatus.textContent = 'Playlist download complete!';
 
         showNotification(
-            `Successfully downloaded ${data.video_count} videos from "${data.playlist_title}"!`,
+            `Successfully downloaded ${data.video_count} videos from "${data.playlist_title}"! Files saved in: ${data.download_path_name}`,
             'success'
         );
 

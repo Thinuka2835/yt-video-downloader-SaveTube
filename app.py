@@ -1,10 +1,13 @@
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 import yt_dlp
+from yt_dlp.utils import DownloadError
 import os
 import json
 from pathlib import Path
 import re
+import tkinter as tk
+from tkinter import filedialog
 
 app = Flask(__name__, static_folder='.')
 CORS(app)
@@ -13,9 +16,65 @@ CORS(app)
 DOWNLOAD_DIR = Path('downloads')
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+# Global dictionary to store download progress
+download_progress = {}
+
+def progress_hook(d):
+    """Hook to track download progress"""
+    if d['status'] == 'downloading':
+        download_id = d.get('info_dict', {}).get('download_id')
+        if download_id:
+            try:
+                p = d.get('_percent_str', '0%').replace('%', '')
+                download_progress[download_id] = {
+                    'status': 'downloading',
+                    'percent': float(p),
+                    'speed': d.get('_speed_str', 'N/A'),
+                    'eta': d.get('_eta_str', 'N/A'),
+                    'filename': d.get('filename', 'Unknown')
+                }
+            except Exception:
+                pass
+    elif d['status'] == 'finished':
+        download_id = d.get('info_dict', {}).get('download_id')
+        if download_id:
+            download_progress[download_id] = {
+                'status': 'finished',
+                'percent': 100,
+                'filename': d.get('filename', 'Unknown')
+            }
+
+import subprocess
+
+def select_download_folder():
+    """Open a native folder selection dialog using a separate process"""
+    try:
+        # Run the dialog.py script and capture output
+        result = subprocess.check_output(['python', 'dialog.py'], text=True).strip()
+        return result if result else None
+    except Exception as e:
+        print(f"Error selecting folder: {e}")
+        return None
+
 def sanitize_filename(filename):
     """Remove invalid characters from filename"""
     return re.sub(r'[<>:"/\\|?*]', '', filename)
+
+def get_ffmpeg_path():
+    """Find FFmpeg path from Winget installation"""
+    try:
+        local_app_data = os.environ.get('LOCALAPPDATA', '')
+        if not local_app_data:
+            return None
+            
+        # Search for ffmpeg.exe in Winget packages
+        winget_dir = Path(local_app_data) / 'Microsoft/WinGet/Packages'
+        if winget_dir.exists():
+            for path in winget_dir.rglob('ffmpeg.exe'):
+                return str(path.parent)
+    except Exception:
+        pass
+    return None
 
 def get_ydl_opts(base_opts=None):
     """Get yt-dlp options with bot bypass configuration"""
@@ -43,6 +102,12 @@ def get_ydl_opts(base_opts=None):
         print(f"✅ Using cookies from: {cookies_file}")
     else:
         print("ℹ️  No cookies.txt found. See YOUTUBE_BOT_FIX.md for help with bot detection")
+    
+    # Check for FFmpeg
+    ffmpeg_path = get_ffmpeg_path()
+    if ffmpeg_path:
+        opts['ffmpeg_location'] = ffmpeg_path
+        print(f"✅ Found FFmpeg at: {ffmpeg_path}")
     
     if base_opts:
         opts.update(base_opts)
@@ -132,6 +197,11 @@ def get_video_info():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/progress/<download_id>', methods=['GET'])
+def get_progress(download_id):
+    """Get progress for a specific download"""
+    return jsonify(download_progress.get(download_id, {'status': 'starting', 'percent': 0}))
+
 @app.route('/api/download', methods=['POST'])
 def download_video():
     """Download video or audio in specified format"""
@@ -140,14 +210,26 @@ def download_video():
         url = data.get('url')
         format_type = data.get('type', 'video')  # 'video' or 'audio'
         output_format = data.get('format', 'mp4')
+        video_quality = data.get('quality', 'best')
+        download_id = data.get('download_id')
         
         if not url:
             return jsonify({'error': 'URL is required'}), 400
+            
+        # Allow user to select download folder
+        download_path = select_download_folder()
+        
+        # If user cancels selection, default to downloads folder
+        if not download_path:
+            download_path = DOWNLOAD_DIR
+            
+        save_dir = Path(download_path)
         
         # Configure yt-dlp options
         ydl_opts = get_ydl_opts({
-            'outtmpl': str(DOWNLOAD_DIR / '%(title)s.%(ext)s'),
+            'outtmpl': str(save_dir / '%(title)s.%(ext)s'),
             'quiet': False,
+            'progress_hooks': [progress_hook],
         })
         
         if format_type == 'audio':
@@ -158,13 +240,22 @@ def download_video():
                 'preferredquality': '192',
             }]
         else:
-            # Video download
-            if output_format == 'mp4':
-                ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-            elif output_format == 'webm':
-                ydl_opts['format'] = 'bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best'
+            # Video download with quality selection
+            if video_quality == 'best':
+                # Best quality available up to 4K
+                base_format = 'bestvideo[height<=2160]'
             else:
-                ydl_opts['format'] = 'best'
+                # Specific quality (e.g., 1080, 720)
+                base_format = f'bestvideo[height<={video_quality}]'
+            
+            # Combine video, audio, and fallback formats
+            # Use specific ext if supported, otherwise convert
+            if output_format == 'mp4':
+                ydl_opts['format'] = f'{base_format}[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            elif output_format == 'webm':
+                ydl_opts['format'] = f'{base_format}[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best'
+            else:
+                ydl_opts['format'] = f'{base_format}+bestaudio/best'
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': output_format,
@@ -174,10 +265,18 @@ def download_video():
             info = ydl.extract_info(url, download=True)
             
             # Find the downloaded file
-            title = sanitize_filename(info.get('title', 'video'))
+            if 'requested_downloads' in info:
+                downloaded_file = info['requested_downloads'][0]['filepath']
+                return jsonify({
+                    'success': True,
+                    'filename': os.path.basename(downloaded_file),
+                    'path': downloaded_file,
+                    'title': info.get('title', 'Unknown')
+                })
             
-            # Check for the file with the correct extension
-            possible_files = list(DOWNLOAD_DIR.glob(f"{title}.*"))
+            # Fallback: Check for the file with the correct extension
+            title = sanitize_filename(info.get('title', 'video'))
+            possible_files = list(save_dir.glob(f"{title}.*"))
             
             if possible_files:
                 downloaded_file = possible_files[0]
@@ -190,6 +289,13 @@ def download_video():
             else:
                 return jsonify({'error': 'File not found after download'}), 500
                 
+    except DownloadError as e:
+        error_msg = str(e)
+        if "ffmpeg not found" in error_msg or "ffmpeg is not installed" in error_msg:
+            return jsonify({
+                'error': 'FFmpeg is missing! Please install it to download this format/quality. See FFMPEG_INSTALLATION.md for instructions.'
+            }), 500
+        return jsonify({'error': str(e)}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -237,12 +343,22 @@ def download_playlist():
         url = data.get('url')
         format_type = data.get('type', 'video')
         output_format = data.get('format', 'mp4')
+        video_quality = data.get('quality', 'best')
         
         if not url:
             return jsonify({'error': 'URL is required'}), 400
+            
+        # Select download folder
+        download_path = select_download_folder()
+        
+        # If user cancels selection, default to system Downloads folder
+        if not download_path:
+            download_path = Path.home() / "Downloads"
+            
+        save_dir = Path(download_path)
         
         # Create playlist subdirectory
-        playlist_dir = DOWNLOAD_DIR / 'playlist_%(playlist_title)s'
+        playlist_dir = save_dir / 'playlist_%(playlist_title)s'
         
         ydl_opts = get_ydl_opts({
             'outtmpl': str(playlist_dir / '%(playlist_index)s - %(title)s.%(ext)s'),
@@ -257,12 +373,18 @@ def download_playlist():
                 'preferredquality': '192',
             }]
         else:
-            if output_format == 'mp4':
-                ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-            elif output_format == 'webm':
-                ydl_opts['format'] = 'bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best'
+            # Video download with quality selection
+            if video_quality == 'best':
+                base_format = 'bestvideo[height<=2160]'
             else:
-                ydl_opts['format'] = 'best'
+                base_format = f'bestvideo[height<={video_quality}]'
+
+            if output_format == 'mp4':
+                ydl_opts['format'] = f'{base_format}[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            elif output_format == 'webm':
+                ydl_opts['format'] = f'{base_format}[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best'
+            else:
+                ydl_opts['format'] = f'{base_format}+bestaudio/best'
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': output_format,
@@ -272,11 +394,13 @@ def download_playlist():
             info = ydl.extract_info(url, download=True)
             
             video_count = len(info.get('entries', []))
+            playlist_title = sanitize_filename(info.get('title', 'Unknown Playlist'))
             
             return jsonify({
                 'success': True,
                 'video_count': video_count,
-                'playlist_title': info.get('title', 'Unknown Playlist')
+                'playlist_title': playlist_title,
+                'download_path_name': f'downloads/playlist_{playlist_title}/'
             })
             
     except Exception as e:
