@@ -366,8 +366,8 @@ async function downloadMedia(type) {
             incrementSuccess();
 
             // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
-            // === START: CRITICAL FIX TO TRIGGER BROWSER DOWNLOAD ===
-            const downloadFileUrl = `${API_BASE}/api/download-file?filepath=${encodeURIComponent(data.path)}`;
+            // Use file_url if available (hosted), otherwise use filepath (local)
+            const downloadFileUrl = data.file_url || `${API_BASE}/api/download-file?filepath=${encodeURIComponent(data.path)}`;
 
             // Use a hidden anchor tag to trigger the file download in the browser
             const a = document.createElement('a');

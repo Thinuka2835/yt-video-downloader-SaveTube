@@ -12,10 +12,9 @@ from tkinter import filedialog
 app = Flask(__name__, static_folder='.')
 CORS(app)
 
-# Default download directory
-# Default download directory (removed default fallback)
-# DOWNLOAD_DIR = Path.home() / "Downloads"
-# DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# Server-side downloads directory (for hosted deployments)
+SERVER_DOWNLOADS_DIR = Path(__file__).parent / "downloads"
+SERVER_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 
@@ -56,8 +55,9 @@ def select_download_folder():
         result = subprocess.check_output(['python', 'dialog.py'], text=True).strip()
         return result if result else None
     except Exception as e:
-        print(f"Error selecting folder: {e}")
-        return None
+        print(f"Folder dialog failed (likely hosted): {e}")
+        # Fall back to server downloads directory when dialog fails (hosted environment)
+        return str(SERVER_DOWNLOADS_DIR)
 
 def sanitize_filename(filename):
     """Remove invalid characters from filename"""
@@ -284,10 +284,10 @@ def download_video():
             if 'requested_downloads' in info:
                 downloaded_file = info['requested_downloads'][0]['filepath']
                 return jsonify({
-                    'success': True,
+                    'title': info.get('title', 'Unknown'),
                     'filename': os.path.basename(downloaded_file),
                     'path': downloaded_file,
-                    'title': info.get('title', 'Unknown')
+                    'file_url': f'/downloads/{os.path.basename(downloaded_file)}'  # For hosted serving
                 })
             
             # Fallback: Check for the file with the correct extension
@@ -297,10 +297,10 @@ def download_video():
             if possible_files:
                 downloaded_file = possible_files[0]
                 return jsonify({
-                    'success': True,
+                    'title': info.get('title', 'Unknown'),
                     'filename': downloaded_file.name,
                     'path': str(downloaded_file),
-                    'title': info.get('title', 'Unknown')
+                    'file_url': f'/downloads/{downloaded_file.name}'  # For hosted serving
                 })
             else:
                 return jsonify({'error': 'File not found after download'}), 500
@@ -449,6 +449,14 @@ def download_file():
             return jsonify({'error': 'Filepath is required'}), 400
             
         return send_file(filepath, as_attachment=True)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 404
+
+@app.route('/downloads/<path:filename>')
+def serve_download(filename):
+    """Serve files from server downloads directory (for hosted deployments)"""
+    try:
+        return send_from_directory(SERVER_DOWNLOADS_DIR, filename, as_attachment=True)
     except Exception as e:
         return jsonify({'error': str(e)}), 404
 
